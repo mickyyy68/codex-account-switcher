@@ -351,7 +351,7 @@ await run("preserves live email and plan when only rate limits fail", async () =
     assert.equal(status.errorCode, "rate_limits_failed");
 
     const account = { name: "work", path: authPath };
-    assert.equal(stripAnsi(internal.buildSwitchAccountLabel(account, status, "work")), "work   live@example.com   5h   — (reset —)   [ACTIVE]");
+    assert.equal(stripAnsi(internal.buildSwitchAccountLabel(account, status, "work")), "work   live@example.com   5h   — (reset —)   weekly   — (reset —)   [ACTIVE]");
     assert.match(internal.buildSwitchAccountHint(account, "", status), /limits unavailable/);
   });
 });
@@ -426,7 +426,7 @@ await run("shows low credits in switch labels and hints", async () => {
 
     assert.equal(internal.statusHasLowCredits(status), true);
     assert.equal(internal.statusHasZeroCredits(status), false);
-    assert.equal(stripAnsi(internal.buildSwitchAccountLabel(account, status, "")), "work   work@example.com   5h  82% (reset 18:40)   [LOW 7 CR]");
+    assert.equal(stripAnsi(internal.buildSwitchAccountLabel(account, status, "")), "work   work@example.com   5h  82% (reset 18:40)   weekly  76% (reset 2039-09-18 18:40)   [LOW 7 CR]");
     assert.equal(
       internal.buildSwitchAccountHint(account, "", status),
       "5h 82% (reset 18:40)  ·  weekly 76% (reset 2039-09-18 18:40)  ·  low credits 7",
@@ -452,7 +452,7 @@ await run("ignores zero credit balances when credits are not enabled", async () 
 
     assert.equal(status.credits, null);
     assert.equal(internal.statusHasZeroCredits(status), false);
-    assert.equal(stripAnsi(internal.buildSwitchAccountLabel(account, status, "", "work")), "work   work@example.com   5h  82% (reset 18:40)   [RECOMMENDED]");
+    assert.equal(stripAnsi(internal.buildSwitchAccountLabel(account, status, "", "work")), "work   work@example.com   5h  82% (reset 18:40)   weekly  76% (reset 2039-09-18 18:40)   [RECOMMENDED]");
     assert.equal(
       internal.buildSwitchAccountHint(account, "", status),
       "5h 82% (reset 18:40)  ·  weekly 76% (reset 2039-09-18 18:40)",
@@ -581,9 +581,9 @@ await run("recommends the healthiest account and flags depleted ones in the labe
 
       const selection = internal.buildSwitchAccountSelection(entries, "zero", "");
       assert.equal(selection.recommendedValue, "best");
-      assert.equal(stripAnsi(selection.options[0].label), "zero   zero@example.com   5h   0% (reset 18:40)   [ACTIVE]");
-      assert.equal(stripAnsi(selection.options[1].label), "best   best@example.com   5h  80% (reset 18:40)   [RECOMMENDED]");
-      assert.equal(stripAnsi(selection.options[2].label), "okay   okay@example.com   5h  60% (reset 18:40)");
+      assert.equal(stripAnsi(selection.options[0].label), "zero   zero@example.com   5h   0% (reset 18:40)   weekly  90% (reset 2039-09-18 18:40)   [ACTIVE]");
+      assert.equal(stripAnsi(selection.options[1].label), "best   best@example.com   5h  80% (reset 18:40)   weekly  70% (reset 2039-09-18 18:40)   [RECOMMENDED]");
+      assert.equal(stripAnsi(selection.options[2].label), "okay   okay@example.com   5h  60% (reset 18:40)   weekly  60% (reset 2039-09-18 18:40)");
     },
   );
 });
@@ -693,8 +693,8 @@ await run("runs smart switch operation and returns a machine-readable result", a
           available: true,
           email: "low@example.com",
           planType: "plus",
-          primary: { label: "5h", remainingPercent: 0, resetAt: "18:40", resetAtSeconds: 10 },
-          secondary: { label: "weekly", remainingPercent: 35, resetAt: "2039-09-18 18:40", resetAtSeconds: 100 },
+          primary: { label: "5h", remainingPercent: 0, resetAt: "18:40", resetAtSeconds: 10, windowDurationMins: null },
+          secondary: { label: "weekly", remainingPercent: 35, resetAt: "2039-09-18 18:40", resetAtSeconds: 100, windowDurationMins: null },
           lowCredits: true,
           zeroCredits: false,
           credits: { hasCredits: true, unlimited: false, balance: "2" },
@@ -704,8 +704,8 @@ await run("runs smart switch operation and returns a machine-readable result", a
           available: true,
           email: "best@example.com",
           planType: "plus",
-          primary: { label: "5h", remainingPercent: 80, resetAt: "18:40", resetAtSeconds: 20 },
-          secondary: { label: "weekly", remainingPercent: 70, resetAt: "2039-09-18 18:40", resetAtSeconds: 200 },
+          primary: { label: "5h", remainingPercent: 80, resetAt: "18:40", resetAtSeconds: 20, windowDurationMins: null },
+          secondary: { label: "weekly", remainingPercent: 70, resetAt: "2039-09-18 18:40", resetAtSeconds: 200, windowDurationMins: null },
           lowCredits: false,
           zeroCredits: false,
           credits: null,
@@ -1056,7 +1056,7 @@ await run("smart switch can bypass stale live-limit cache when forced", async ()
 
     const accounts = internal.readAccounts();
     const warmOptions = await internal.buildSwitchAccountOptions(accounts, "active", "");
-    assert.equal(stripAnsi(warmOptions[0].label), "active   active@example.com   5h  90% (reset 18:40)   [RECOMMENDED]  [ACTIVE]");
+    assert.equal(stripAnsi(warmOptions[0].label), "active   active@example.com   5h  90% (reset 18:40)   weekly  90% (reset 2039-09-18 18:40)   [RECOMMENDED]  [ACTIVE]");
 
     phase = "live";
     const result = await internal.runSmartSwitchOperation({ forceRefreshLiveLimits: true });
@@ -1176,9 +1176,9 @@ await run("builds switch account options from live limits and reuses cache", asy
       const accounts = internal.readAccounts();
       const firstOptions = await internal.buildSwitchAccountOptions(accounts, "work", "");
       assert.equal(firstOptions.length, 2);
-      assert.equal(stripAnsi(firstOptions[0].label), "    work   acct-1@example.com   5h  74% (reset 18:40)   [RECOMMENDED]  [ACTIVE]");
+      assert.equal(stripAnsi(firstOptions[0].label), "    work   acct-1@example.com   5h  74% (reset 18:40)   weekly  91% (reset 2039-09-18 18:40)   [RECOMMENDED]  [ACTIVE]");
       assert.equal(firstOptions[0].hint, "5h 74% (reset 18:40)  ·  weekly 91% (reset 2039-09-18 18:40)");
-      assert.equal(stripAnsi(firstOptions[1].label), "personal   acct-2@example.com   5h  60% (reset 18:40)");
+      assert.equal(stripAnsi(firstOptions[1].label), "personal   acct-2@example.com   5h  60% (reset 18:40)   weekly  80% (reset 2039-09-18 18:40)");
       assert.equal(firstOptions[1].hint, "5h 60% (reset 18:40)  ·  weekly 80% (reset 2039-09-18 18:40)");
       assert.equal(fetchCount, 2);
 
@@ -1338,50 +1338,12 @@ await run("keeps smart-switch internals available after manual extraction", asyn
   });
 });
 
-await run("dispatches manual and smart-switch modes explicitly", async () => {
-  const { decideCdxMode } = require("../lib/cdx/dispatcher");
-
-  assert.deepEqual(
-    decideCdxMode({ args: ["manual"], isTTY: true }),
-    { kind: "manual", forwardedArgs: [] },
-  );
-
-  assert.deepEqual(
-    decideCdxMode({ args: ["smart-switch", "--json"], isTTY: false }),
-    { kind: "smart-switch-json", forwardedArgs: [] },
-  );
-});
-
-await run("keeps smart-switch json as an explicit subcommand", async () => {
-  const { decideCdxMode } = require("../lib/cdx/dispatcher");
-  assert.equal(decideCdxMode({ args: ["smart-switch", "--json"], isTTY: false }).kind, "smart-switch-json");
-});
-
-await run("routes codex-style invocations to the wrapper lane", async () => {
-  const { decideCdxMode } = require("../lib/cdx/dispatcher");
-
-  assert.deepEqual(
-    decideCdxMode({ args: [], isTTY: true }),
-    { kind: "wrapper", forwardedArgs: [], isTTY: true },
-  );
-
-  assert.deepEqual(
-    decideCdxMode({ args: ["resume", "--last"], isTTY: true }),
-    { kind: "wrapper", forwardedArgs: ["resume", "--last"], isTTY: true },
-  );
-
-  assert.deepEqual(
-    decideCdxMode({ args: ["exec", "print('hi')"], isTTY: false }),
-    { kind: "wrapper", forwardedArgs: ["exec", "print('hi')"], isTTY: false },
-  );
-});
-
-await run("manual menu exposes smart, Account list, Add account, settings, and exit", async () => {
+await run("manual menu exposes smart, Account list, Add account, Cloud sync, exit", async () => {
   await withEnv({ CDX_DIR: mkTempDir("cdx-menu-shape-"), CODEX_HOME: mkTempDir("cdx-menu-shape-home-") }, async (internal) => {
     const options = internal.getManualActionOptions();
     assert.deepEqual(
       options.map((entry) => entry.value),
-      ["smart", "switch", "add", "settings", "exit"],
+      ["smart", "switch", "add", "sync", "exit"],
     );
     const switchOption = options.find((entry) => entry.value === "switch");
     assert.equal(switchOption.label, "Account list");
@@ -1393,6 +1355,144 @@ await run("manual menu exposes smart, Account list, Add account, settings, and e
     assert.equal(typeof internal.performAccountCleanup, "function");
     assert.equal(typeof internal.performAccountAddition, "function");
     assert.equal(typeof internal.getFirstAvailableNumericAccountName, "function");
+  });
+});
+
+await run("manual menu sync label is Connect cloud sync when not configured", async () => {
+  await withEnv({ CDX_DIR: mkTempDir("cdx-menu-cloud-noconf-"), CODEX_HOME: mkTempDir("cdx-menu-cloud-noconf-home-") }, async (internal) => {
+    const syncOption = internal.getManualActionOptions().find((entry) => entry.value === "sync");
+    assert.equal(syncOption.label, "Connect cloud sync");
+  });
+});
+
+await run("manual menu sync label embeds GitHub login when configured", async () => {
+  await withEnv({ CDX_DIR: mkTempDir("cdx-menu-cloud-conf-"), CODEX_HOME: mkTempDir("cdx-menu-cloud-conf-home-") }, async (internal) => {
+    const opts = internal.getManualActionOptions({ syncConfigured: true, syncLogin: "samu" });
+    const syncOption = opts.find((entry) => entry.value === "sync");
+    assert.equal(syncOption.label, "Cloud sync (@samu)");
+  });
+});
+
+await run("formatFiveHourInline strips the leading date from reset (always HH:MM only)", async () => {
+  await withEnv({ CDX_DIR: mkTempDir("cdx-5h-time-"), CODEX_HOME: mkTempDir("cdx-5h-time-home-") }, async (internal) => {
+    const status = {
+      available: true,
+      primary: { label: "5h", remainingPercent: 87, resetAt: "2026-05-27 02:30" },
+      secondary: { label: "weekly", remainingPercent: 70, resetAt: "2026-06-02 10:00" },
+    };
+    assert.equal(stripAnsi(internal.formatFiveHourInline(status)), "5h  87% (reset 02:30)");
+    // weekly still keeps the date when not same day
+    assert.equal(stripAnsi(internal.formatWeeklyInline(status)), "weekly  70% (reset 2026-06-02 10:00)");
+  });
+});
+
+await run("computeUsableHoursScore returns min(5h_hours, weekly_hours) with default W=7", async () => {
+  await withEnv({ CDX_DIR: mkTempDir("cdx-score-"), CODEX_HOME: mkTempDir("cdx-score-home-") }, async (internal) => {
+    const make = (pct5h, pctWeekly) => ({
+      available: true,
+      primary: { label: "5h", remainingPercent: pct5h, resetAt: "18:40", resetAtSeconds: 10, windowDurationMins: 300 },
+      secondary: { label: "weekly", remainingPercent: pctWeekly, resetAt: "x", resetAtSeconds: 100, windowDurationMins: 10080 },
+    });
+    const score = (s) => internal.computeUsableHoursScore(s);
+
+    // Reference: T_5h_max = 5h, T_weekly_max = W * 5 = 35h (default W=7)
+    assert.ok(Math.abs(score(make(100, 100)) - 5) < 1e-9, "full → min(5, 35) = 5");
+    assert.ok(Math.abs(score(make(50, 2)) - 0.7) < 1e-9, "50%/2% → min(2.5, 0.7) = 0.7");
+    assert.ok(Math.abs(score(make(5, 80)) - 0.25) < 1e-9, "5%/80% → min(0.25, 28) = 0.25");
+    assert.ok(Math.abs(score(make(100, 50)) - 5) < 1e-9, "100%/50% → min(5, 17.5) = 5");
+    assert.ok(Math.abs(score(make(80, 100)) - 4) < 1e-9, "80%/100% → min(4, 35) = 4");
+    assert.ok(Math.abs(score(make(100, 10)) - 3.5) < 1e-9, "100%/10% → min(5, 3.5) = 3.5");
+
+    assert.equal(score({ available: false }), -1, "unavailable → -1");
+    assert.equal(score(null), -1, "null → -1");
+  });
+});
+
+await run("computeUsableHoursScore honors CDX_WEEKLY_OVER_5H_RATIO env var", async () => {
+  const prev = process.env.CDX_WEEKLY_OVER_5H_RATIO;
+  process.env.CDX_WEEKLY_OVER_5H_RATIO = "10";
+  try {
+    await withEnv({ CDX_DIR: mkTempDir("cdx-score-env-"), CODEX_HOME: mkTempDir("cdx-score-env-home-") }, async (internal) => {
+      const status = {
+        available: true,
+        primary: { label: "5h", remainingPercent: 100, resetAt: "x", windowDurationMins: 300 },
+        secondary: { label: "weekly", remainingPercent: 10, resetAt: "y", windowDurationMins: 10080 },
+      };
+      // weekly_cap = 10 * 5h = 50h, weekly remaining = 10% * 50 = 5h, min(5, 5) = 5
+      assert.ok(Math.abs(internal.computeUsableHoursScore(status) - 5) < 1e-9);
+    });
+  } finally {
+    if (prev === undefined) {
+      delete process.env.CDX_WEEKLY_OVER_5H_RATIO;
+    } else {
+      process.env.CDX_WEEKLY_OVER_5H_RATIO = prev;
+    }
+  }
+});
+
+await run("smart switch picks the account with the highest usable hours score", async () => {
+  await withEnv({ CDX_DIR: mkTempDir("cdx-score-rank-"), CODEX_HOME: mkTempDir("cdx-score-rank-home-") }, async (internal) => {
+    const makeEntry = (name, pct5h, pctWeekly, options = {}) => ({
+      account: { name, pinned: options.pinned === true, excludedFromRecommendation: options.excluded === true },
+      status: {
+        available: true,
+        primary: { label: "5h", remainingPercent: pct5h, resetAt: "18:40", resetAtSeconds: 10, windowDurationMins: 300 },
+        secondary: { label: "weekly", remainingPercent: pctWeekly, resetAt: "y", resetAtSeconds: 100, windowDurationMins: 10080 },
+      },
+    });
+
+    // Scenarios from the algorithm design (W=7):
+    //   A 50%/2%  → 0.7h
+    //   B  5%/80% → 0.25h
+    //   C 100%/50% → 5h
+    //   D 80%/100% → 4h
+    //   E 100%/10% → 3.5h
+    //   F 100%/100% → 5h (tie with C, tiebreaker on weekly)
+    const entries = [
+      makeEntry("a", 50, 2),
+      makeEntry("b", 5, 80),
+      makeEntry("c", 100, 50),
+      makeEntry("d", 80, 100),
+      makeEntry("e", 100, 10),
+      makeEntry("f", 100, 100),
+    ];
+
+    // f beats c because tiebreaker is secondaryRemaining (100 > 50)
+    assert.equal(internal.getRecommendedSwitchAccount(entries, "", ""), "f");
+
+    // Remove f → c wins
+    assert.equal(internal.getRecommendedSwitchAccount(entries.filter((e) => e.account.name !== "f"), "", ""), "c");
+
+    // Remove c+f → d wins (4h vs e's 3.5h)
+    assert.equal(
+      internal.getRecommendedSwitchAccount(entries.filter((e) => !["c", "f"].includes(e.account.name)), "", ""),
+      "d",
+    );
+
+    // Only A and B → A wins (0.7h vs 0.25h) — note B has higher weekly but the
+    // 5h bottleneck makes it the worse pick in the short term
+    assert.equal(
+      internal.getRecommendedSwitchAccount([entries[0], entries[1]], "", ""),
+      "a",
+    );
+  });
+});
+
+await run("pinned wins over higher score (user preference is sticky)", async () => {
+  await withEnv({ CDX_DIR: mkTempDir("cdx-score-pinned-"), CODEX_HOME: mkTempDir("cdx-score-pinned-home-") }, async (internal) => {
+    const makeEntry = (name, pct5h, pctWeekly, pinned) => ({
+      account: { name, pinned, excludedFromRecommendation: false },
+      status: {
+        available: true,
+        primary: { label: "5h", remainingPercent: pct5h, resetAt: "x", resetAtSeconds: 10, windowDurationMins: 300 },
+        secondary: { label: "weekly", remainingPercent: pctWeekly, resetAt: "y", resetAtSeconds: 100, windowDurationMins: 10080 },
+      },
+    });
+    const entries = [
+      makeEntry("low-pinned", 30, 30, true),
+      makeEntry("high-unpinned", 100, 100, false),
+    ];
+    assert.equal(internal.getRecommendedSwitchAccount(entries, "", ""), "low-pinned");
   });
 });
 
@@ -1464,21 +1564,33 @@ await run("opRemove clears the account's health entry so a reused name starts fr
   });
 });
 
-await run("sortEntriesByFiveHour puts highest 5h remaining on top and unavailable at the bottom", async () => {
-  await withEnv({ CDX_DIR: mkTempDir("cdx-sort-5h-"), CODEX_HOME: mkTempDir("cdx-sort-5h-home-") }, async (internal) => {
+await run("sortEntriesByRecommendation puts best recommendation on top and unusable last", async () => {
+  await withEnv({ CDX_DIR: mkTempDir("cdx-sort-rec-"), CODEX_HOME: mkTempDir("cdx-sort-rec-home-") }, async (internal) => {
+    const make = (name, pct5h, pctWeekly, available = true) => ({
+      account: { name, pinned: false, excludedFromRecommendation: false },
+      status: available
+        ? {
+            available: true,
+            primary: { label: "5h", remainingPercent: pct5h, resetAt: "x", resetAtSeconds: 10, windowDurationMins: 300 },
+            secondary: { label: "weekly", remainingPercent: pctWeekly, resetAt: "y", resetAtSeconds: 100, windowDurationMins: 10080 },
+          }
+        : { available: false },
+    });
     const entries = [
-      { account: { name: "a" }, status: { available: true, primary: { remainingPercent: 30 } } },
-      { account: { name: "b" }, status: { available: true, primary: { remainingPercent: 90 } } },
-      { account: { name: "c" }, status: { available: false } },
-      { account: { name: "d" }, status: { available: true, primary: { remainingPercent: 0 } } },
-      { account: { name: "e" }, status: { available: true, primary: { remainingPercent: 90 } } },
-      { account: { name: "f" }, status: { available: true, primary: { remainingPercent: 60 } } },
+      make("a", 50, 2),        // score 0.7
+      make("b", 5, 80),        // score 0.25
+      make("c", 100, 50),      // score 5
+      make("d", 80, 100),      // score 4
+      make("e", 100, 10),      // score 3.5
+      make("f", 100, 100),     // score 5, weekly 100 > c
+      make("g", 0, 80),        // not usable (5h=0)
+      make("h", null, null, false), // not available
     ];
 
-    const sorted = internal.sortEntriesByFiveHour(entries);
+    const sorted = internal.sortEntriesByRecommendation(entries);
     assert.deepEqual(
-      sorted.map((entry) => entry.account.name),
-      ["b", "e", "f", "a", "d", "c"],
+      sorted.map((e) => e.account.name),
+      ["f", "c", "d", "e", "a", "b", "g", "h"],
     );
   });
 });

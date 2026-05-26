@@ -6,15 +6,30 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 
-const { decideCdxMode } = require("../lib/cdx/dispatcher");
 const { runManualEntryPoint } = require("../lib/cdx/manual");
-const { readCdxSettings, writeCdxSettings } = require("../lib/cdx/settings");
-const { runCodexWrapper } = require("../lib/cdx/wrapper");
 const { runAccountListPrompt } = require("../lib/cdx/account-list-prompt");
+const syncUi = require("../lib/cdx/sync-ui");
+const syncIndexLazy = require("../lib/cdx/sync");
+const tombstones = require("../lib/cdx/sync/tombstones");
+const accountEmails = require("../lib/cdx/sync/account-emails");
+
+function syncIndexModule() {
+  return syncIndexLazy;
+}
+
+function formatSyncStatusForHeader() {
+  const config = syncIndexLazy.loadSyncConfig(CDX_DIR);
+  if (!config) {
+    return "";
+  }
+  const rel = syncUi.formatLastSyncRelative(config.lastSync);
+  const loginPart = config.login ? `@${config.login}` : "";
+  return colorize(`cloud${loginPart} · ${rel}`, "boldCyan");
+}
 const {
   findMatchingSavedAccount,
   getFirstAvailableNumericAccountName,
-} = require("../lib/ccx/current-account");
+} = require("../lib/cdx/current-account");
 const {
   DEFAULT_CLEANUP_THRESHOLD,
   readAccountHealth,
@@ -638,6 +653,26 @@ function opSave(name) {
   if (!getActive()) {
     setActive(name);
   }
+
+  const savedEmail = getAccountEmail(snapshotPath);
+  if (savedEmail) {
+    try {
+      accountEmails.setEmail(CDX_DIR, name, savedEmail);
+    } catch (_) {
+      // mapping is best-effort
+    }
+    try {
+      const ts = tombstones.readTombstones(CDX_DIR);
+      const key = savedEmail.toLowerCase();
+      if (Object.prototype.hasOwnProperty.call(ts, key)) {
+        delete ts[key];
+        tombstones.writeTombstones(CDX_DIR, ts);
+      }
+    } catch (_) {
+      // tombstone cleanup is best-effort
+    }
+  }
+
   return `Saved current auth as '${name}'`;
 }
 
@@ -675,6 +710,12 @@ function opRename(oldName, newName) {
     setActive(newName);
   }
 
+  try {
+    accountEmails.renameName(CDX_DIR, oldName, newName);
+  } catch (_) {
+    // mapping is best-effort
+  }
+
   return `Renamed account '${oldName}' to '${newName}'`;
 }
 
@@ -685,8 +726,31 @@ function opRemove(name) {
     die(`unknown account: ${name}`);
   }
 
+  let removedEmail = getAccountEmail(removed.path);
+  if (!removedEmail) {
+    try {
+      removedEmail = accountEmails.getEmail(CDX_DIR, name);
+    } catch (_) {
+      removedEmail = "";
+    }
+  }
+
   const remaining = accounts.filter((entry) => entry.name !== name);
   writeAccounts(remaining);
+
+  if (removedEmail) {
+    try {
+      tombstones.addTombstone(CDX_DIR, removedEmail);
+    } catch (_) {
+      // tombstone writing is best-effort
+    }
+  }
+
+  try {
+    accountEmails.removeName(CDX_DIR, name);
+  } catch (_) {
+    // mapping cleanup is best-effort
+  }
 
   if (isManagedSnapshot(removed.path) && isRegularFile(removed.path)) {
     fs.rmSync(removed.path, { force: true });
@@ -1255,11 +1319,14 @@ function createRateLimitWindowSummary(window, fallbackLabel, now = new Date()) {
 
   const resetAtSeconds = Number(window.resetsAt);
 
+  const windowDurationMins = Number(window.windowDurationMins);
+
   return {
     label: getRateLimitWindowLabel(window.windowDurationMins, fallbackLabel),
     remainingPercent: Math.max(0, Math.min(100, Math.round(100 - usedPercent))),
     resetAt: formatResetAt(resetAtSeconds, now),
     resetAtSeconds: Number.isFinite(resetAtSeconds) && resetAtSeconds > 0 ? resetAtSeconds : 0,
+    windowDurationMins: Number.isFinite(windowDurationMins) && windowDurationMins > 0 ? windowDurationMins : null,
   };
 }
 
@@ -1494,7 +1561,46 @@ function getResetSortValue(summary) {
   return Number.isFinite(raw) && raw > 0 ? raw : Number.POSITIVE_INFINITY;
 }
 
-function getStatusRecommendation(status) {
+const DEFAULT_WEEKLY_OVER_5H_RATIO = 7;
+const DEFAULT_FIVE_HOUR_WINDOW_MINS = 300;
+
+function resolveWeeklyOverFiveHourRatio() {
+  const raw = process.env.CDX_WEEKLY_OVER_5H_RATIO;
+  const parsed = Number(raw);
+  if (Number.isFinite(parsed) && parsed > 0) {
+    return parsed;
+  }
+  return DEFAULT_WEEKLY_OVER_5H_RATIO;
+}
+
+function computeUsableHoursScore(status, options = {}) {
+  if (!status || !status.available) {
+    return -1;
+  }
+  const W = Number.isFinite(options.weeklyOverFiveHourRatio) && options.weeklyOverFiveHourRatio > 0
+    ? options.weeklyOverFiveHourRatio
+    : resolveWeeklyOverFiveHourRatio();
+
+  const primary = status.primary;
+  const secondary = status.secondary;
+  const fiveHourMins = (primary && primary.windowDurationMins) || DEFAULT_FIVE_HOUR_WINDOW_MINS;
+  const fiveHourWindowHours = fiveHourMins / 60;
+
+  const fiveHourRemainingPct = primary ? Number(primary.remainingPercent) : 100;
+  const weeklyRemainingPct = secondary ? Number(secondary.remainingPercent) : 100;
+
+  const hoursFiveH = Number.isFinite(fiveHourRemainingPct)
+    ? (Math.max(0, fiveHourRemainingPct) / 100) * fiveHourWindowHours
+    : fiveHourWindowHours;
+  const weeklyCapHours = W * fiveHourWindowHours;
+  const hoursWeekly = secondary && Number.isFinite(weeklyRemainingPct)
+    ? (Math.max(0, weeklyRemainingPct) / 100) * weeklyCapHours
+    : Number.POSITIVE_INFINITY;
+
+  return Math.min(hoursFiveH, hoursWeekly);
+}
+
+function getStatusRecommendation(status, options = {}) {
   if (!status || !status.available) {
     return null;
   }
@@ -1504,6 +1610,7 @@ function getStatusRecommendation(status) {
     return null;
   }
 
+  const usableHours = computeUsableHoursScore(status, options);
   const primaryRemaining = getRemainingPercent(status.primary);
   const secondaryRemaining = status.secondary ? getRemainingPercent(status.secondary) : 101;
   const creditBalance = getCreditBalanceValue(status);
@@ -1512,6 +1619,7 @@ function getStatusRecommendation(status) {
 
   return {
     usableNow,
+    usableHours,
     primaryRemaining,
     secondaryRemaining,
     creditBalance,
@@ -1533,8 +1641,9 @@ function compareRecommendationMetrics(left, right) {
   const comparators = [
     [left.usableNow ? 0 : 1, right.usableNow ? 0 : 1, true],
     [left.pinned ? 0 : 1, right.pinned ? 0 : 1, true],
-    [left.primaryRemaining, right.primaryRemaining, false],
+    [left.usableHours, right.usableHours, false],
     [left.secondaryRemaining, right.secondaryRemaining, false],
+    [left.primaryRemaining, right.primaryRemaining, false],
     [left.creditBalance, right.creditBalance, false],
     [left.primaryReset, right.primaryReset, true],
   ];
@@ -1588,11 +1697,6 @@ function setCodexAppServerQueryForTests(query) {
   APP_SERVER_QUERY = typeof query === "function" ? query : null;
 }
 
-function formatPlanBadge(planType) {
-  const normalized = normalizePlanType(planType);
-  return normalized ? `[${normalized.toUpperCase()}]` : "";
-}
-
 function formatPinnedBadge(isPinned) {
   return isPinned ? colorize("[PINNED]", "boldYellow") : "";
 }
@@ -1616,18 +1720,28 @@ function formatDepletedBadge(summary) {
   return colorize(`[${summary.label.toUpperCase()} 0%]`, "boldRed");
 }
 
-function formatFiveHourInline(status) {
-  if (!status || !status.available || !status.primary) {
-    return colorize("5h   — (reset —)", "dim");
+function stripResetDate(value) {
+  if (typeof value !== "string" || !value) {
+    return value;
   }
-  const remainingRaw = Number(status.primary.remainingPercent);
+  return value.replace(/^\d{4}-\d{2}-\d{2}\s+/, "");
+}
+
+function formatWindowInline(label, window, options = {}) {
+  if (!window) {
+    return colorize(`${label}   — (reset —)`, "dim");
+  }
+  const remainingRaw = Number(window.remainingPercent);
   if (!Number.isFinite(remainingRaw)) {
-    return colorize("5h   — (reset —)", "dim");
+    return colorize(`${label}   — (reset —)`, "dim");
   }
   const clamped = Math.max(0, Math.min(100, remainingRaw));
   const percentText = String(clamped).padStart(3);
-  const resetAt = status.primary && status.primary.resetAt ? String(status.primary.resetAt) : "—";
-  const text = `5h ${percentText}% (reset ${resetAt})`;
+  let resetAt = window.resetAt ? String(window.resetAt) : "—";
+  if (options.timeOnly && resetAt !== "—") {
+    resetAt = stripResetDate(resetAt);
+  }
+  const text = `${label} ${percentText}% (reset ${resetAt})`;
   let style = "boldGreen";
   if (clamped < 34) {
     style = "boldRed";
@@ -1635,6 +1749,20 @@ function formatFiveHourInline(status) {
     style = "boldYellow";
   }
   return colorize(text, style);
+}
+
+function formatFiveHourInline(status) {
+  if (!status || !status.available) {
+    return colorize("5h   — (reset —)", "dim");
+  }
+  return formatWindowInline("5h", status.primary, { timeOnly: true });
+}
+
+function formatWeeklyInline(status) {
+  if (!status || !status.available) {
+    return colorize("weekly   — (reset —)", "dim");
+  }
+  return formatWindowInline("weekly", status.secondary);
 }
 
 function formatCreditsBadge(status) {
@@ -1689,11 +1817,11 @@ function buildSwitchAccountLabel(account, status, activeName = "", recommendedNa
   const emailText = email ? truncateToWidth(email, emailWidth) : "";
   const emailColumn = email ? padColumn(emailText, emailWidth, "left") : "";
   const fiveHour = formatFiveHourInline(status);
+  const weekly = formatWeeklyInline(status);
 
   const badges = [
     formatPinnedBadge(account.pinned === true),
     formatExcludedBadge(account.excludedFromRecommendation === true),
-    formatDepletedBadge(status && status.secondary),
     formatCreditsBadge(status),
     formatRecommendedBadge(account.name === recommendedName),
     formatActiveBadge(account.name === activeName),
@@ -1704,6 +1832,7 @@ function buildSwitchAccountLabel(account, status, activeName = "", recommendedNa
     parts.push(emailColumn);
   }
   parts.push(fiveHour);
+  parts.push(weekly);
   if (badges) {
     parts.push(badges);
   }
@@ -1817,6 +1946,7 @@ function createRateLimitWindowSnapshot(summary) {
   }
 
   return {
+    windowDurationMins: summary.windowDurationMins || null,
     label: summary.label,
     remainingPercent: summary.remainingPercent,
     resetAt: summary.resetAt,
@@ -1988,7 +2118,11 @@ async function loadSwitchAccountEntriesWithLoading(p, accounts, options = {}) {
     return await loadSwitchAccountEntries(accounts, options);
   } finally {
     if (loading) {
-      loading.clear();
+      if (typeof loading.clear === "function") {
+        loading.clear();
+      } else {
+        loading.stop("");
+      }
     }
   }
 }
@@ -2014,26 +2148,21 @@ async function loadSwitchAccountSelection(p, accounts, activeName, disabledName)
   return buildSwitchAccountSelection(entries, activeName, disabledName);
 }
 
-function sortEntriesByFiveHour(entries) {
+function sortEntriesByRecommendation(entries) {
   if (!Array.isArray(entries) || entries.length === 0) {
     return [];
   }
   const decorated = entries.map((entry, index) => {
-    const status = entry && entry.status ? entry.status : null;
-    const primary = status && status.primary ? status.primary : null;
-    return {
-      entry,
-      index,
-      available: !!(status && status.available),
-      primaryRemaining: getRemainingPercent(primary),
-    };
+    const metrics = getStatusRecommendation(entry && entry.status);
+    const recommendation = metrics
+      ? { ...metrics, pinned: entry && entry.account && entry.account.pinned === true }
+      : null;
+    return { entry, index, recommendation };
   });
   decorated.sort((a, b) => {
-    if (a.available !== b.available) {
-      return a.available ? -1 : 1;
-    }
-    if (a.primaryRemaining !== b.primaryRemaining) {
-      return b.primaryRemaining - a.primaryRemaining;
+    const cmp = compareRecommendationMetrics(a.recommendation, b.recommendation);
+    if (cmp !== 0) {
+      return cmp;
     }
     return a.index - b.index;
   });
@@ -2342,99 +2471,124 @@ function resetWifiStatusCacheForTests() {
   WIFI_STATUS_CACHE = { value: null, checkedAt: 0 };
 }
 
-function formatMainMenuMessage(activeName, online) {
+function formatMainMenuMessage(activeName, online, syncStatus = "") {
   const activePart = activeName ? `active: ${activeName}` : "no active account";
   const wifiLabel = online
     ? colorize("wifi ok", "boldGreen")
     : colorize("wifi down", "boldRed");
-  return `Choose an action (${activePart} · ${wifiLabel})`;
+  const syncPart = syncStatus ? ` · ${syncStatus}` : "";
+  return `Choose an action (${activePart} · ${wifiLabel}${syncPart})`;
 }
 
-function getManualActionOptions() {
-  return [
+function getManualActionOptions(options = {}) {
+  const syncConfigured = options.syncConfigured === true;
+  const syncLogin = typeof options.syncLogin === "string" ? options.syncLogin : "";
+  const items = [
     { value: "smart", label: "Smart switch", hint: "Use the healthiest account now" },
     { value: "switch", label: "Account list", hint: "Enter activates, Space adds, Tab renames, Del removes" },
     { value: "add", label: "Add account", hint: "Log in via browser to add a new account" },
-    { value: "settings", label: "CDX settings", hint: "Configure wrapper defaults" },
-    { value: "exit", label: "Exit" },
   ];
+  if (syncConfigured) {
+    const label = syncLogin ? `Cloud sync (@${syncLogin})` : "Cloud sync";
+    items.push({ value: "sync", label, hint: "Sync now or disconnect" });
+  } else {
+    items.push({
+      value: "sync",
+      label: "Connect cloud sync",
+      hint: "Sync accounts across devices via a private GitHub gist",
+    });
+  }
+  items.push({ value: "exit", label: "Exit" });
+  return items;
 }
 
-const ACCESS_MODE_LABELS = {
-  "read-only": "Read Only",
-  "default": "Default",
-  "full-access": "Full Access",
-};
-
-const ACCESS_MODE_FLAGS = {
-  "read-only": ["--sandbox", "read-only", "--ask-for-approval", "never"],
-  "default": [],
-  "full-access": ["--sandbox", "danger-full-access", "--ask-for-approval", "never"],
-};
-
-function getAccessModeLabel(accessMode) {
-  return ACCESS_MODE_LABELS[accessMode] || ACCESS_MODE_LABELS.default;
-}
-
-function getSettingsMenuOptions(settings = {}) {
-  const mode = settings && settings.accessMode ? settings.accessMode : "default";
+function getCloudSyncActionOptions() {
   return [
-    {
-      value: "access-mode",
-      label: "Access mode",
-      hint: getAccessModeLabel(mode),
-    },
+    { value: "sync-now", label: "Sync now", hint: "Force a fresh pull/push" },
+    { value: "disconnect", label: "Disconnect", hint: "Stop syncing on this device" },
     { value: "back", label: "Back" },
   ];
 }
 
-function getAccessModeOptions() {
-  return [
-    { value: "read-only", label: "Read Only" },
-    { value: "default", label: "Default" },
-    { value: "full-access", label: "Full Access" },
-  ];
-}
+async function buildSyncDeps() {
+  let keychainResult;
+  try {
+    const { defaultKeychainWithFallback } = require("../lib/cdx/sync/keychain");
+    keychainResult = await defaultKeychainWithFallback(CDX_DIR);
+  } catch (err) {
+    return { error: err.message };
+  }
+  const keychainInstance = keychainResult.keychain;
+  const keychainKind = keychainResult.kind;
+  const keychainWarning = keychainKind === "file"
+    ? `OS keychain unavailable (${keychainResult.reason}). Falling back to file-based secrets at ${keychainResult.location} (chmod 600).`
+    : "";
 
-function getAccessModeInitialValue(settings = {}) {
-  const mode = settings && typeof settings.accessMode === "string" ? settings.accessMode : "";
-  return ACCESS_MODE_LABELS[mode] ? mode : "default";
-}
-
-function hasExplicitAccessFlags(args = []) {
-  const values = Array.isArray(args) ? args : [];
-  for (let index = 0; index < values.length; index += 1) {
-    const current = values[index];
-    if (typeof current !== "string") {
-      continue;
+  function loadLocalState() {
+    const accounts = readAccounts();
+    const activeName = getActive();
+    const health = readAccountHealth();
+    const authContents = {};
+    for (const account of accounts) {
+      try {
+        authContents[account.name] = JSON.parse(fs.readFileSync(account.path, "utf8"));
+      } catch (_) {
+        authContents[account.name] = null;
+      }
     }
-    if (
-      current === "-a" ||
-      current === "--ask-for-approval" ||
-      /^-a(?:=.+|.+)$/.test(current) ||
-      /^--ask-for-approval=.+$/.test(current) ||
-      current === "-s" ||
-      current === "--sandbox" ||
-      /^-s.+$/.test(current) ||
-      /^--sandbox=.+$/.test(current)
-    ) {
-      return true;
+    return { accounts, activeName, health, authContents };
+  }
+
+  function removeManagedSnapshotForName(name) {
+    const current = readAccountsFromJson(ACCOUNTS_FILE).find((entry) => entry.name === name);
+    if (current && isManagedSnapshot(current.path) && isRegularFile(current.path)) {
+      fs.rmSync(current.path, { force: true });
     }
   }
-  return false;
+
+  return {
+    cdxDir: CDX_DIR,
+    keychain: keychainInstance,
+    keychainKind,
+    keychainWarning,
+    emailExtractor: extractEmailFromObject,
+    promptValue,
+    isOnline,
+    loadLocalState,
+    applyDeps: {
+      writeAccounts,
+      setActive,
+      clearActive,
+      writeAccountHealth,
+      removeManagedSnapshotForName,
+      writeAccountEmails: (mapping) => accountEmails.replaceAll(CDX_DIR, mapping),
+      prepareBackup: () => {
+        const backupModule = require("../lib/cdx/sync/backup");
+        backupModule.createBackup(CDX_DIR);
+        backupModule.pruneOldBackups(CDX_DIR);
+      },
+    },
+  };
 }
 
-function applySavedAccessMode({ forwardedArgs, settings }) {
-  const args = Array.isArray(forwardedArgs) ? [...forwardedArgs] : [];
-  const mode = settings && typeof settings.accessMode === "string" ? settings.accessMode : "";
-  const injection = ACCESS_MODE_FLAGS[mode];
-  if (!injection || injection.length === 0) {
-    return args;
+async function maybeAutoSyncOnOpen(p) {
+  const syncIndex = require("../lib/cdx/sync");
+  if (!syncIndex.loadSyncConfig(CDX_DIR)) {
+    return;
   }
-  if (hasExplicitAccessFlags(args)) {
-    return args;
+  const deps = await buildSyncDeps();
+  if (deps.error) {
+    p.log.warn(`Cloud sync configured but unavailable on this device: ${deps.error}`);
+    return;
   }
-  return [...injection, ...args];
+  try {
+    await syncUi.autoSyncOnOpen(p, deps);
+  } catch (err) {
+    if (err instanceof PromptCancelledError) {
+      return;
+    }
+    p.log.warn(`Cloud sync skipped: ${err.message}`);
+  }
 }
 
 const ADD_ACCOUNT_SENTINEL = "__cdx_add_account__";
@@ -2455,7 +2609,7 @@ async function runAccountListPicker(p) {
       p.log.warn("No accounts configured.");
       return "continue";
     }
-    const sortedEntries = sortEntriesByFiveHour(keptEntries);
+    const sortedEntries = sortEntriesByRecommendation(keptEntries);
     const selection = buildSwitchAccountSelection(sortedEntries, activeName, "");
 
     const addOption = {
@@ -2595,6 +2749,7 @@ async function runInteractive(migration) {
   }
 
   await promptCurrentAuthRegistrationIfNeeded(p);
+  await maybeAutoSyncOnOpen(p);
 
   while (true) {
     const repair = repairAccountsStateOnDisk();
@@ -2605,11 +2760,17 @@ async function runInteractive(migration) {
 
     const active = getActive();
     const online = await checkWifiStatus();
+    const syncStatus = formatSyncStatusForHeader();
+    const syncConfig = syncIndexModule().loadSyncConfig(CDX_DIR);
+    const syncConfigured = !!syncConfig;
     const action = await promptValue(
       p,
       p.select({
-        message: formatMainMenuMessage(active, online),
-        options: getManualActionOptions(),
+        message: formatMainMenuMessage(active, online, syncStatus),
+        options: getManualActionOptions({
+          syncConfigured,
+          syncLogin: syncConfig && syncConfig.login ? syncConfig.login : "",
+        }),
       }),
     );
 
@@ -2618,36 +2779,35 @@ async function runInteractive(migration) {
       return;
     }
 
-    if (action === "settings") {
-      const currentSettings = readCdxSettings();
-      const settingAction = await promptValue(
-        p,
-        p.select({
-          message: "CDX settings",
-          options: getSettingsMenuOptions(currentSettings),
-        }),
-      );
-
-      if (settingAction === "back") {
+    if (action === "sync") {
+      const deps = await buildSyncDeps();
+      if (deps.error) {
+        p.log.error(`Cloud sync unavailable: ${deps.error}`);
         continue;
       }
-
-      const accessMode = await promptValue(
-        p,
-        p.select({
-          message: "Default access mode",
-          initialValue: getAccessModeInitialValue(currentSettings),
-          options: getAccessModeOptions(),
-        }),
-      );
-
-      writeCdxSettings({
-        settings: {
-          ...currentSettings,
-          accessMode,
-        },
-      });
-      p.log.success(`Saved access mode '${getAccessModeLabel(accessMode)}'.`);
+      try {
+        if (!syncConfigured) {
+          await syncUi.runSetupWizard(p, deps);
+        } else {
+          const cloudAction = await promptValue(
+            p,
+            p.select({
+              message: syncConfig.login ? `Cloud sync (@${syncConfig.login})` : "Cloud sync",
+              options: getCloudSyncActionOptions(),
+            }),
+          );
+          if (cloudAction === "sync-now") {
+            await syncUi.runSyncNow(p, deps);
+          } else if (cloudAction === "disconnect") {
+            await syncUi.runDisconnect(p, deps);
+          }
+        }
+      } catch (err) {
+        if (err instanceof PromptCancelledError) {
+          continue;
+        }
+        p.log.error(`Cloud sync error: ${err.message}`);
+      }
       continue;
     }
 
@@ -2692,7 +2852,7 @@ async function runInteractive(migration) {
           continue;
         }
 
-        const sortedEntries = sortEntriesByFiveHour(keptEntries);
+        const sortedEntries = sortEntriesByRecommendation(keptEntries);
         const selection = buildSwitchAccountSelection(sortedEntries, activeName, "");
         const decision = getSmartSwitchDecisionFromSelection(selection, activeName);
         if (!decision.ok) {
@@ -2749,52 +2909,14 @@ async function runInteractive(migration) {
 }
 
 async function main() {
-  const mode = decideCdxMode({
-    args: process.argv.slice(2),
-    isTTY: process.stdin.isTTY && process.stdout.isTTY,
-  });
-
-  if (mode.kind === "smart-switch-json") {
-    ensureState();
-    try {
-      const result = await runSmartSwitchOperation();
-      process.stdout.write(`${JSON.stringify(result)}\n`);
-      process.exit(
-        result.ok
-          ? 0
-          : ((result.reason === "all_exhausted" || result.reason === "all_unavailable_or_exhausted") ? 2 : 1),
-      );
-    } catch (err) {
-      die(err.message || String(err));
-    }
-    return;
-  }
-
-  if (mode.kind === "manual") {
-    if (mode.forwardedArgs.length > 0) {
-      die("usage: cdx manual");
-    }
-    await runManualEntryPoint({
-      ensureState,
-      requireTTY,
-      runInteractive,
-      PromptCancelledError,
-      loadPrompts,
-      die,
-      exit: (code) => process.exit(code),
-    });
-    return;
-  }
-
-  const settings = readCdxSettings();
-  const wrapperArgs = applySavedAccessMode({
-    forwardedArgs: mode.forwardedArgs,
-    settings,
-  });
-
-  await runCodexWrapper({
-    argv: wrapperArgs,
-    mainImpl: require("./ccx.js")._internalMain,
+  await runManualEntryPoint({
+    ensureState,
+    requireTTY,
+    runInteractive,
+    PromptCancelledError,
+    loadPrompts,
+    die,
+    exit: (code) => process.exit(code),
   });
 }
 
@@ -2802,12 +2924,6 @@ module.exports = {
   _internal: {
     resolveCdxDir,
     getManualActionOptions,
-    getSettingsMenuOptions,
-    getAccessModeOptions,
-    getAccessModeInitialValue,
-    getAccessModeLabel,
-    hasExplicitAccessFlags,
-    applySavedAccessMode,
     ensureState,
     migrateLegacyAccountsOnce,
     parseLegacyAccountsTsv,
@@ -2866,10 +2982,14 @@ module.exports = {
     resetWifiStatusCacheForTests,
     evaluateCurrentAuthRegistration,
     promptCurrentAuthRegistrationIfNeeded,
-    sortEntriesByFiveHour,
+    sortEntriesByRecommendation,
     getFirstAvailableNumericAccountName,
     formatRateLimitHint,
     formatFiveHourInline,
+    formatWeeklyInline,
+    computeUsableHoursScore,
+    resolveWeeklyOverFiveHourRatio,
+    DEFAULT_WEEKLY_OVER_5H_RATIO,
     buildSwitchAccountLabel,
     buildSwitchAccountHint,
     buildSwitchAccountOptions,

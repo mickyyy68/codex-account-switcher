@@ -52,54 +52,24 @@ function run(name, argv, checks) {
   checks(output);
 }
 
-function runJson(name, argv, expectedStatus, checks) {
-  const isolated = createIsolatedEnv();
-  const result = spawnSync(process.execPath, [BIN_PATH, ...argv], {
-    encoding: "utf8",
-    env: isolated.env,
-    cwd: isolated.cwd,
-    timeout: SMOKE_TIMEOUT_MS,
-  });
-  if (result.error) {
-    throw new Error(`${name}: ${result.error.message}`);
-  }
-
-  const output = `${result.stdout || ""}${result.stderr || ""}`;
-  assert.equal(result.status, expectedStatus, `${name}: expected exit status ${expectedStatus}`);
-  assert.doesNotMatch(output, /ccx:/i);
-  checks(JSON.parse(result.stdout || ""));
-}
-
-run("default", [], (output) => {
+run("default (no args) requires a TTY", [], (output) => {
   assert.match(output, /cdx: interactive terminal required/i);
-  assert.doesNotMatch(output, /ccx: interactive terminal required/i);
 });
 
-run("wrapper help", ["--help"], (output) => {
+run("ignores --help and still requires a TTY", ["--help"], (output) => {
   assert.match(output, /cdx: interactive terminal required/i);
-  assert.doesNotMatch(output, /ccx: interactive terminal required/i);
 });
 
-run("manual", ["manual"], (output) => {
+run("ignores `manual` arg (legacy subcommand removed)", ["manual"], (output) => {
   assert.match(output, /cdx: interactive terminal required/i);
-  assert.doesNotMatch(output, /ccx: interactive terminal required/i);
 });
 
-run("resume", ["resume", "sess-1"], (output) => {
+run("ignores any other arg (cdx no longer forwards to codex)", ["resume", "sess-1"], (output) => {
   assert.match(output, /cdx: interactive terminal required/i);
-  assert.doesNotMatch(output, /ccx:/i);
 });
 
-run("manual extra", ["manual", "extra"], (output) => {
-  assert.match(output, /usage: cdx manual/i);
-  assert.doesNotMatch(output, /ccx:/i);
+run("ignores `smart-switch --json` (legacy subcommand removed)", ["smart-switch", "--json"], (output) => {
+  assert.match(output, /cdx: interactive terminal required/i);
 });
 
-runJson("smart switch json", ["smart-switch", "--json"], 1, (payload) => {
-  assert.equal(typeof payload, "object");
-  assert.notEqual(payload, null);
-  assert.equal(payload.ok, false);
-  assert.equal(typeof payload.from, "string");
-  assert.equal(typeof payload.to, "string");
-  assert.equal(payload.reason, "no_accounts");
-});
+process.stdout.write("all smoke tests passed\n");

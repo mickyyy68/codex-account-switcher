@@ -1,37 +1,38 @@
 {
   "name": "codex-account-switcher",
-  "version": "0.2.0",
-  "description": "Switch between multiple Codex CLI auth accounts with cdx switch",
+  "version": "0.3.0",
+  "description": "Interactive account manager for the Codex CLI, with optional cloud sync via a private GitHub gist",
   "license": "MIT",
   "type": "commonjs",
   "bin": {
     "cdx": "bin/cdx.js",
-    "cxs": "bin/cdx.js",
-    "ccx": "bin/ccx.js"
+    "cxs": "bin/cdx.js"
   },
   "files": [
     "bin",
     "lib",
-    "README.md"
+    "README.md",
+    "CHANGELOG.md"
   ],
   "engines": {
     "node": ">=18"
   },
   "dependencies": {
-    "@clack/prompts": "^1.2.0",
-    "node-pty": "^1.0.0"
+    "@clack/prompts": "^0.11.0",
+    "keytar": "^7.9.0"
   },
   "scripts": {
     "test:smoke": "node tests/smoke.js",
     "test:regressions": "node tests/regressions.js",
-    "test:ccx": "node tests/ccx-regressions.js",
-    "test": "npm run test:smoke && npm run test:regressions && npm run test:ccx"
+    "test:sync": "node tests/sync-regressions.js",
+    "test": "npm run test:smoke && npm run test:regressions && npm run test:sync"
   },
   "keywords": [
     "codex",
     "openai",
     "cli",
     "account",
-    "switcher"
+    "switcher",
+    "sync"
   ]
 }
