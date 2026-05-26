@@ -2221,6 +2221,7 @@ async function promptCurrentAuthRegistrationIfNeeded(p) {
   }
   const name = String(raw || "").trim() || decision.suggestedName;
   p.log.success(opSave(name));
+  await syncAfterMutation(p);
   return { ...decision, saved: true, name };
 }
 
@@ -2299,6 +2300,7 @@ async function performAccountAddition(p) {
     const accounts = readAccounts();
     writeAccounts(upsertAccount(accounts, name, snapshotPath));
     p.log.success(`Added account '${name}'.`);
+    await syncAfterMutation(p);
     return { added: true, name };
   } finally {
     try {
@@ -2591,6 +2593,22 @@ async function maybeAutoSyncOnOpen(p) {
   }
 }
 
+async function syncAfterMutation(p) {
+  if (!syncIndexLazy.loadSyncConfig(CDX_DIR)) {
+    return;
+  }
+  const deps = await buildSyncDeps();
+  if (deps.error) {
+    p.log.warn(`Cloud sync skipped: ${deps.error}`);
+    return;
+  }
+  try {
+    await syncUi.runSyncNow(p, deps, { silent: true, interactive: false });
+  } catch (err) {
+    p.log.warn(`Cloud sync failed: ${err.message}`);
+  }
+}
+
 const ADD_ACCOUNT_SENTINEL = "__cdx_add_account__";
 
 async function runAccountListPicker(p) {
@@ -2675,6 +2693,7 @@ async function runAccountListPicker(p) {
         continue;
       }
       p.log.success(opRename(result.value, newName));
+      await syncAfterMutation(p);
       continue;
     }
 
@@ -2702,6 +2721,7 @@ async function runAccountListPicker(p) {
         continue;
       }
       p.log.success(opRemove(result.value));
+      await syncAfterMutation(p);
       continue;
     }
 
@@ -2726,6 +2746,7 @@ async function runAccountListPicker(p) {
         }
       }
       p.log.success(opUse(result.value));
+      await syncAfterMutation(p);
       return "continue";
     }
   }
@@ -2899,7 +2920,9 @@ async function runInteractive(migration) {
             `Smart switch picked '${targetName}' with low credits (${getCreditBalanceLabel(entry.status)}).`,
           );
         }
-        p.outro(opUse(targetName));
+        const useMsg = opUse(targetName);
+        await syncAfterMutation(p);
+        p.outro(useMsg);
         return;
       }
       continue;
