@@ -558,7 +558,10 @@ async function main() {
       { email: "a@b.com", name: "work", pinned: true, mtime: 100, auth: { token: "t1" } },
     ]);
     const plan = vaultToLocal(v, { existingAccounts: [], cdxDir: "/home/u/.cdx" });
-    assert.equal(plan.accounts[0].path, "/home/u/.cdx/auth/a-b-com.auth.json");
+    assert.equal(
+      plan.accounts[0].path,
+      nodePath.join("/home/u/.cdx", "auth", "a-b-com.auth.json"),
+    );
     assert.deepEqual(plan.snapshots[0].content, { token: "t1" });
   });
 
