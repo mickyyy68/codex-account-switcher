@@ -1,7 +1,7 @@
 {
   "name": "codex-account-switcher",
-  "version": "0.2.0",
-  "description": "Switch between multiple Codex CLI auth accounts with cdx switch",
+  "version": "0.3.0",
+  "description": "Interactive account manager for the Codex CLI, with optional cloud sync via a private GitHub gist",
   "license": "MIT",
   "type": "commonjs",
   "bin": {
@@ -10,24 +10,29 @@
   },
   "files": [
     "bin",
-    "README.md"
+    "lib",
+    "README.md",
+    "CHANGELOG.md"
   ],
   "engines": {
     "node": ">=18"
   },
   "dependencies": {
-    "@clack/prompts": "^1.2.0"
+    "@clack/prompts": "^0.11.0",
+    "keytar": "^7.9.0"
   },
   "scripts": {
-    "test:smoke": "node -e 'const { spawnSync } = require(\"node:child_process\"); const r = spawnSync(process.execPath, [\"bin/cdx.js\"], { encoding: \"utf8\" }); const out = (r.stdout || \"\") + (r.stderr || \"\"); if (r.status !== 1) process.exit(1); if (!/interactive terminal required/i.test(out)) process.exit(1);'",
+    "test:smoke": "node tests/smoke.js",
     "test:regressions": "node tests/regressions.js",
-    "test": "npm run test:smoke && npm run test:regressions"
+    "test:sync": "node tests/sync-regressions.js",
+    "test": "npm run test:smoke && npm run test:regressions && npm run test:sync"
   },
   "keywords": [
     "codex",
     "openai",
     "cli",
     "account",
-    "switcher"
+    "switcher",
+    "sync"
   ]
 }
